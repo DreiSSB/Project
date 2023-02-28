@@ -119,6 +119,15 @@ def train(args, train_dataset, model, tokenizer):
         scheduler.load_state_dict(torch.load(os.path.join(
                                   args.model_name_or_path, "scheduler.pt")))
 
+    if args.fp16:
+        try:
+            from apex import amp
+        except ImportError:
+            raise ImportError("Please install apex from https://www.github."
+                              "com/nvidia/apex to use fp16 training.")
+        model, optimizer = amp.initialize(model, optimizer,
+                                          opt_level=args.fp16_opt_level)
+
     # multi-gpu training (should be after apex fp16 initialization)
     if args.n_gpu > 1:
         model = torch.nn.DataParallel(model)
@@ -213,12 +222,13 @@ def train(args, train_dataset, model, tokenizer):
                 inputs["labels"] = lm_labels
 
             ##################################################
-            # TODO: Training Loop
-            # (1) Run forward and get the model outputs
-            # (2) Compute the loss (store as `loss` variable)
-            # Hint: See the HuggingFace transformers doc to properly get
+            # TODO: Please finish the following training loop.
+            #print(inputs)
+            outputs = model(**inputs)
+
+            # TODO: See the HuggingFace transformers doc to properly get
             # the loss from the model outputs.
-            raise NotImplementedError("Please finish the TODO!")
+            loss = outputs.loss
 
             if args.n_gpu > 1:
                 # Applies mean() to average on multi-gpu parallel training.
@@ -226,20 +236,22 @@ def train(args, train_dataset, model, tokenizer):
 
             # Handles the `gradient_accumulation_steps`, i.e., every such
             # steps we update the model, so the loss needs to be devided.
-            if args.gradient_accumulation_steps > 1:
-                loss = loss / args.gradient_accumulation_steps
+            # loss = loss / args.gradient_accumulation_steps
 
-            # (3) Implement the backward for loss propagation
-            raise NotImplementedError("Please finish the TODO!")
+            # Loss backward.
+            loss.backward()
 
             # End of TODO.
             ##################################################
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                args.max_grad_norm)
-
+                if args.fp16:
+                    torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), args.max_grad_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                   args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
@@ -375,27 +387,24 @@ def evaluate(args, model, tokenizer, prefix="", data_split="test"):
                 inputs["labels"] = lm_labels
 
             ##################################################
-            # TODO: Evaluation Loop
-            # (1) Run forward and get the model outputs
-            raise NotImplementedError("Please finish the TODO!")
+            # TODO: Please finish the following eval loop.
+            outputs = model(**inputs)
+            #print(inputs["input_ids"])
+            #print(outputs)
+            # TODO: See the HuggingFace transformers doc to properly get the loss
+            # AND the logits from the model outputs, it can simply be 
+            # indexing properly the outputs as tuples.
+            # Make sure to perform a `.mean()` on the eval loss and add it
+            # to the `eval_loss` variable.
+            loss = outputs.loss
+            logits = outputs.logits
+            eval_loss += loss.mean()
 
-            if has_label or args.training_phase == "pretrain":
-                # (2) If label present or pretraining, compute the loss and prediction logits
-                # Label the loss as `eval_loss` and logits as `logits`
-                # Hint: See the HuggingFace transformers doc to properly get the loss
-                # AND the logits from the model outputs, it can simply be 
-                # indexing properly the outputs as tuples.
-                # Make sure to perform a `.mean()` on the eval loss and add it
-                # to the `eval_loss` variable.
-                raise NotImplementedError("Please finish the TODO!")
-            else:
-                # (3) If labels not present, only compute the prediction logits
-                # Label the logits as `logits`
-                raise NotImplementedError("Please finish the TODO!")
 
-            # (4) Convert logits into probability distribution and relabel as `logits`
-            # Hint: Refer to Softmax function
-            raise NotImplementedError("Please finish the TODO!")
+            # TODO: Handles the logits with Softmax properly.
+            sm = torch.nn.Softmax(dim=1)
+            logits = sm(logits)
+            #print(logits)
 
             # End of TODO.
             ##################################################
@@ -435,18 +444,27 @@ def evaluate(args, model, tokenizer, prefix="", data_split="test"):
         eval_f1 = 0
         eval_pairwise_acc = 0
 
+        ##################################################
+        # TODO: Please finish the results computation.
+
         if args.training_phase == "pretrain":
             # For `pretrain` phase, we only need to compute the
             # metric "perplexity", that is the exp of the eval_loss.
             eval_perplexity = math.exp(eval_loss)
         else:
-            # Standard evalution
-            eval_acc, eval_prec, eval_recall, eval_f1 = evaluate_standard(preds, \
-                                                labels, args.score_average_method)
-            
-            # Pairwise accuracy
+            # TODO: Please use the preds and labels to properly compute all
+            # the following metrics: accuracy, precision, recall and F1-score.
+            # Please also make your sci-kit learn scores able to take the
+            # `args.score_average_method` for the `average` argument.
+            eval_acc, eval_prec, eval_recall, eval_f1 = evaluate_standard(preds, labels)
+            # TODO: Pairwise accuracy.
+            #print(guids, preds, labels)
             if args.task_name == "com2sense":
                 eval_pairwise_acc = pairwise_accuracy(guids, preds, labels)
+            #print(eval_pairwise_acc)
+            #die
+        # End of TODO.
+        ##################################################
 
         if args.training_phase == "pretrain":
             eval_acc_dict = {"{}_perplexity".format(args.task_name): eval_perplexity}
@@ -578,11 +596,12 @@ def main():
     )
     logger.warning(
         "Process rank: %s, device: %s, n_gpu: %s, distributed "
-        "training: %s",
+        "training: %s, 16-bits training: %s",
         args.local_rank,
         device,
         args.n_gpu,
         bool(args.local_rank != -1),
+        args.fp16,
     )
 
     # Sets seed.
@@ -604,25 +623,28 @@ def main():
         torch.distributed.barrier()
 
     ##################################################
-    # TODO: Model Selection
-    # Please fill in the below to obtain the
+    # TODO: Please fill in the below to obtain the
     # `AutoConfig`, `AutoTokenizer` and some auto
     # model classes correctly. Check the documentation
     # for essential args.
 
-    # (1) Load config
-    raise NotImplementedError("Please finish the TODO!")
+    # TODO: Huggingface configs.
+    config = BertConfig.from_pretrained('bert-base-cased')
 
-    # (2) Load tokenizer
-    raise NotImplementedError("Please finish the TODO!")
+    # TODO: Tokenizer.
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-cased')
 
+    # TODO: Defines the model. We use the MLM model when 
+    # `training_phase` is `pretrain` otherwise we use the
+    # sequence classification model.
     if args.training_phase == "pretrain":
-        # (3) Load MLM model if pretraining (Optional)
-        # Complete only if doing MLM pretraining for improving performance
-        raise NotImplementedError("Please finish the TODO!")
+        model = AutoModelForMaskedLM.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=config
+        )
     else:
-        # (4) Load sequence classification model otherwise
-        raise NotImplementedError("Please finish the TODO!")
+        model = AutoModelForSequenceClassification.from_config(config)
 
     # End of TODO.
     ##################################################
